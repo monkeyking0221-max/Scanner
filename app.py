@@ -24,8 +24,8 @@ def get_historical_analysis(ticker):
         if financials.empty or balance_sheet.empty:
             return None, "无法获取财务报表数据"
 
-        # 截取最近3个财年
-        years = financials.columns[:3]
+        # 截取最近7个财年
+        years = financials.columns[:7]
         history_data = []
 
         for year in years:
