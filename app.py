@@ -53,7 +53,7 @@ def get_historical_analysis(ticker):
         return None, str(e)
 
 # --- 页面排版 ---
-st.title("🛡️ ASX 价值投资研究中心")
+st.title("🐱 ASX 价值投资研究中心")
 st.markdown("---")
 
 tab1, tab2, tab3 = st.tabs(["🎯 单股 3 年深度体检", "📊 长期关注池概览", "⚙️ 列表管理"])
