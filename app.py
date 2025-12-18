@@ -2,73 +2,82 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-# 设置网页标题
-st.set_page_config(page_title="ASX 每日精选筛选器", layout="wide")
-st.title("🇦🇺 ASX 澳洲股市每日精选筛选器")
-st.write("基于 均线多头排列 + 异动量比 + 涨幅过滤 逻辑")
+st.set_page_config(page_title="ASX 200 全量扫描器", layout="wide")
+st.title("🇦🇺 ASX 200 自动筛选系统")
 
-# 1. 定义 ASX 关注池 (你可以根据需要添加更多代码)
-DEFAULT_TICKERS = [
-    "CBA.AX", "BHP.AX", "CSL.AX", "NAB.AX", "WBC.AX", "ANZ.AX", "FMG.AX", 
-    "TLS.AX", "WOW.AX", "WES.AX", "MQG.AX", "RIO.AX", "GMG.AX", "WDS.AX"
-]
+# --- 第一步：自动获取 ASX 200 列表 ---
+@st.cache_data
+def get_asx200_list():
+    try:
+        # 从维基百科抓取最新的 ASX 200 列表
+        url = "https://en.wikipedia.org/wiki/S%26P/ASX_200"
+        tables = pd.read_html(url)
+        df_asx = tables[0] # 第一个表格通常是成员名单
+        # 维基百科上的列名可能是 'Ticker' 或 'Symbol'
+        tickers = df_asx['Symbol'].tolist()
+        # 补全 .AX 后缀
+        return [str(t).strip() + ".AX" for t in tickers]
+    except Exception as e:
+        st.error(f"无法自动获取列表，请检查网络: {e}")
+        return ["CBA.AX", "BHP.AX", "CSL.AX"] # 失败时的备用方案
 
-# 侧边栏配置
-st.sidebar.header("参数设置")
-input_tickers = st.sidebar.text_area("输入 ASX 代码 (逗号分隔)", ",".join(DEFAULT_TICKERS))
-vol_threshold = st.sidebar.slider("成交量比率阈值 (倍数)", 1.0, 5.0, 1.5)
+# 加载池子
+asx_pool = get_asx200_list()
+st.sidebar.info(f"当前池子包含 {len(asx_pool)} 只 ASX 200 成分股")
 
-def screen_asx(ticker_list):
+# --- 第二步：扫描参数设置 ---
+st.sidebar.header("过滤参数")
+vol_threshold = st.sidebar.slider("量比阈值 (今日成交量/平均)", 1.0, 3.0, 1.5)
+min_change = st.sidebar.slider("最小涨幅 (%)", 0.0, 5.0, 1.0) / 100
+
+def run_scanner(ticker_list):
     results = []
     progress_bar = st.progress(0)
+    status_text = st.empty()
     
     for i, ticker in enumerate(ticker_list):
         try:
-            stock = yf.Ticker(ticker.strip())
+            status_text.text(f"正在分析: {ticker}")
+            stock = yf.Ticker(ticker)
+            # 获取最近30天数据
             df = stock.history(period="30d")
             
             if len(df) < 20: continue
 
-            # 核心数据
-            curr_close = df['Close'].iloc[-1]
-            prev_close = df['Close'].iloc[-2]
+            # 数据计算
+            curr_price = df['Close'].iloc[-1]
+            last_price = df['Close'].iloc[-2]
             curr_vol = df['Volume'].iloc[-1]
             avg_vol = df['Volume'].mean()
+            daily_change = (curr_price - last_price) / last_price
             
-            # 技术指标计算
-            ma5 = df['Close'].rolling(5).mean().iloc[-1]
-            ma10 = df['Close'].rolling(10).mean().iloc[-1]
+            # 均线
             ma20 = df['Close'].rolling(20).mean().iloc[-1]
-            
-            # 筛选逻辑
-            is_bullish = ma5 > ma10 > ma20  # 均线多头
-            vol_ratio = curr_vol / avg_vol  # 量比
-            daily_change = (curr_close - prev_close) / prev_close
-            
-            # 过滤条件: 均线向上 + 量比达标 + 涨幅在 1% 到 8% 之间
-            if is_bullish and vol_ratio >= vol_threshold and 0.01 < daily_change < 0.08:
+            ma50 = df['Close'].rolling(50).mean().iloc[-1] if len(df) >= 50 else ma20
+
+            # 筛选条件：1.涨幅达标 2.量比达标 3.收盘价在20日线之上（趋势向上）
+            if daily_change >= min_change and (curr_vol / avg_vol) >= vol_threshold and curr_price > ma20:
                 results.append({
                     "代码": ticker,
-                    "当前价": f"${curr_close:.2f}",
-                    "今日涨幅": f"{daily_change*100:.2f}%",
-                    "量比": round(vol_ratio, 2),
-                    "状态": "📈 趋势走强"
+                    "价格": f"${curr_price:.2f}",
+                    "涨幅": f"{daily_change*100:.2f}%",
+                    "量比": round(curr_vol/avg_vol, 2),
+                    "20日均线": f"${ma20:.2f}"
                 })
         except:
-            pass
+            continue
         progress_bar.progress((i + 1) / len(ticker_list))
     
+    status_text.text("分析完成！")
     return pd.DataFrame(results)
 
-if st.button("开始扫描今日精选"):
-    list_to_scan = input_tickers.split(",")
-    with st.spinner('正在分析 ASX 数据...'):
-        final_df = screen_asx(list_to_scan)
+# --- 第三步：运行界面 ---
+if st.button(f"点此开始全量扫描 {len(asx_pool)} 只股票"):
+    with st.spinner('扫描中，大约需要 1-2 分钟...'):
+        final_results = run_scanner(asx_pool)
         
-    if not final_df.empty:
-        st.success(f"扫描完成！找到 {len(final_df)} 只符合条件的股票：")
-        st.table(final_df.sort_values(by="量比", ascending=False))
+    if not final_results.empty:
+        st.write(f"### 🎯 今日精选结果 ({len(final_results)} 只)")
+        st.dataframe(final_results.sort_values(by="量比", ascending=False), use_container_width=True)
     else:
-        st.warning("今日暂无符合条件的筛选结果，建议扩大关注池或降低量比阈值。")
-
-st.info("注：数据来源 Yahoo Finance，ASX 数据通常有 20 分钟延迟。")
+        st.warning("目前没有股票完全符合设定条件。")
