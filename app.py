@@ -1,80 +1,109 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import json
+import os
 
-st.set_page_config(page_title="ASX 全量扫描器", layout="wide")
-st.title("🇦🇺 ASX 股票自定义扫描系统")
+st.set_page_config(page_title="ASX 多列表扫描器", layout="wide")
 
-# --- 修改后的列表获取逻辑 ---
-st.sidebar.header("1. 上传股票池")
-uploaded_file = st.sidebar.file_uploader("上传 CSV 文件 (第一列为代码)", type="csv")
+# --- 1. 数据持久化处理 ---
+CONFIG_FILE = "my_lists.json"
 
-if uploaded_file:
-    # 读取上传的文件
-    df_input = pd.read_csv(uploaded_file)
-    # 假设第一列是代码，并自动加上 .AX
-    raw_tickers = df_input.iloc[:, 0].tolist()
-    asx_pool = [str(t).strip().split('.')[0] + ".AX" for t in raw_tickers]
-    st.sidebar.success(f"成功加载 {len(asx_pool)} 只股票")
-else:
-    # 默认显示的备用小池子
-    asx_pool = ["CBA.AX", "BHP.AX", "CSL.AX", "TLS.AX"]
-    st.sidebar.warning("等待上传 CSV，当前使用默认演示列表")
+def load_lists():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    else:
+        # 初始默认数据
+        return {
+            "我的关注": ["CBA", "BHP", "CSL"],
+            "矿业板块": ["RIO", "FMG", "WDS"],
+            "科技板块": ["XRO", "WTC", "CPU"]
+        }
 
+def save_lists(data):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(data, f)
 
-# --- 第二步：扫描参数设置 ---
-st.sidebar.header("过滤参数")
-vol_threshold = st.sidebar.slider("量比阈值 (今日成交量/平均)", 1.0, 3.0, 1.5)
-min_change = st.sidebar.slider("最小涨幅 (%)", 0.0, 5.0, 1.0) / 100
+# 初始化 session_state 存储列表
+if 'all_lists' not in st.session_state:
+    st.session_state.all_lists = load_lists()
 
-def run_scanner(ticker_list):
+# --- 2. 侧边栏：管理模式 ---
+st.sidebar.title("⚙️ 列表管理")
+manage_mode = st.sidebar.checkbox("开启编辑模式")
+
+if manage_mode:
+    st.subheader("📝 编辑/增减你的股票清单")
+    
+    # 将字典转换为 DataFrame 方便编辑
+    # 格式：列表名称 | 股票代码 (逗号分隔)
+    list_data = [{"列表名称": k, "代码内容": ", ".join(v)} for k, v in st.session_state.all_lists.items()]
+    df_editor = pd.DataFrame(list_data)
+    
+    # 使用交互式表格编辑器
+    edited_df = st.data_editor(df_editor, num_rows="dynamic", use_container_width=True)
+    
+    if st.button("保存修改"):
+        # 将编辑后的表格转回字典
+        new_lists = {}
+        for _, row in edited_df.iterrows():
+            if pd.notna(row['列表名称']):
+                # 清理代码：去空格、转大写
+                codes = [c.strip().upper() for c in str(row['代码内容']).split(",") if c.strip()]
+                new_lists[row['列表名称']] = codes
+        
+        st.session_state.all_lists = new_lists
+        save_lists(new_lists)
+        st.success("配置已保存！")
+        st.rerun()
+
+st.divider()
+
+# --- 3. 主界面：选择与扫描 ---
+st.title("🇦🇺 ASX 选股扫描器")
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    selected_list_name = st.selectbox("选择要扫描的列表", list(st.session_state.all_lists.keys()))
+    current_codes = st.session_state.all_lists[selected_list_name]
+    st.info(f"当前选中: {len(current_codes)} 只股票")
+
+with col2:
+    vol_ratio = st.slider("量比阈值", 1.0, 3.0, 1.5)
+    min_change = st.slider("最小涨幅 (%)", 0.0, 5.0, 1.0) / 100
+
+# 补全 .AX 后缀
+final_tickers = [c if c.endswith(".AX") else c + ".AX" for c in current_codes]
+
+# --- 4. 扫描函数 ---
+def run_scan(tickers):
     results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, ticker in enumerate(ticker_list):
+    prog = st.progress(0)
+    for i, t in enumerate(tickers):
         try:
-            status_text.text(f"正在分析: {ticker}")
-            stock = yf.Ticker(ticker)
-            # 获取最近30天数据
+            stock = yf.Ticker(t)
             df = stock.history(period="30d")
-            
             if len(df) < 20: continue
-
-            # 数据计算
-            curr_price = df['Close'].iloc[-1]
-            last_price = df['Close'].iloc[-2]
-            curr_vol = df['Volume'].iloc[-1]
-            avg_vol = df['Volume'].mean()
-            daily_change = (curr_price - last_price) / last_price
             
-            # 均线
-            ma20 = df['Close'].rolling(20).mean().iloc[-1]
-            ma50 = df['Close'].rolling(50).mean().iloc[-1] if len(df) >= 50 else ma20
-
-            # 筛选条件：1.涨幅达标 2.量比达标 3.收盘价在20日线之上（趋势向上）
-            if daily_change >= min_change and (curr_vol / avg_vol) >= vol_threshold and curr_price > ma20:
-                results.append({
-                    "代码": ticker,
-                    "价格": f"${curr_price:.2f}",
-                    "涨幅": f"{daily_change*100:.2f}%",
-                    "量比": round(curr_vol/avg_vol, 2),
-                    "20日均线": f"${ma20:.2f}"
-                })
-        except:
-            continue
-        progress_bar.progress((i + 1) / len(ticker_list))
-    
-    status_text.text("分析完成！")
+            c_p = df['Close'].iloc[-1]
+            l_p = df['Close'].iloc[-2]
+            ratio = df['Volume'].iloc[-1] / df['Volume'].mean()
+            change = (c_p - l_p) / l_p
+            
+            if change >= min_change and ratio >= vol_ratio:
+                results.append({"代码": t, "价格": f"${c_p:.2f}", "涨幅": f"{change*100:.2f}%", "量比": round(ratio, 2)})
+        except: continue
+        prog.progress((i+1)/len(tickers))
     return pd.DataFrame(results)
 
-# --- 第三步：运行界面 ---
-if st.button(f"点此开始全量扫描 {len(asx_pool)} 只股票"):
-    with st.spinner('扫描中，大约需要 1-2 分钟...'):
-        final_results = run_scanner(asx_pool)
-        
-    if not final_results.empty:
-        st.write(f"### 🎯 今日精选结果 ({len(final_results)} 只)")
-        st.dataframe(final_results.sort_values(by="量比", ascending=False), use_container_width=True)
+if st.button(f"开始扫描 {selected_list_name}"):
+    if not final_tickers:
+        st.error("列表为空，请先在编辑模式添加股票。")
     else:
-        st.warning("目前没有股票完全符合设定条件。")
+        res = run_scan(final_tickers)
+        if not res.empty:
+            st.dataframe(res.sort_values("量比", ascending=False), use_container_width=True)
+        else:
+            st.warning("无符合条件的结果。")
