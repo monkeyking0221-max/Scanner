@@ -2,28 +2,25 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-st.set_page_config(page_title="ASX 200 全量扫描器", layout="wide")
-st.title("🇦🇺 ASX 200 自动筛选系统")
+st.set_page_config(page_title="ASX 全量扫描器", layout="wide")
+st.title("🇦🇺 ASX 股票自定义扫描系统")
 
-# --- 第一步：自动获取 ASX 200 列表 ---
-@st.cache_data
-def get_asx200_list():
-    try:
-        # 从维基百科抓取最新的 ASX 200 列表
-        url = "https://en.wikipedia.org/wiki/S%26P/ASX_200"
-        tables = pd.read_html(url)
-        df_asx = tables[0] # 第一个表格通常是成员名单
-        # 维基百科上的列名可能是 'Ticker' 或 'Symbol'
-        tickers = df_asx['Symbol'].tolist()
-        # 补全 .AX 后缀
-        return [str(t).strip() + ".AX" for t in tickers]
-    except Exception as e:
-        st.error(f"无法自动获取列表，请检查网络: {e}")
-        return ["CBA.AX", "BHP.AX", "CSL.AX"] # 失败时的备用方案
+# --- 修改后的列表获取逻辑 ---
+st.sidebar.header("1. 上传股票池")
+uploaded_file = st.sidebar.file_uploader("上传 CSV 文件 (第一列为代码)", type="csv")
 
-# 加载池子
-asx_pool = get_asx200_list()
-st.sidebar.info(f"当前池子包含 {len(asx_pool)} 只 ASX 200 成分股")
+if uploaded_file:
+    # 读取上传的文件
+    df_input = pd.read_csv(uploaded_file)
+    # 假设第一列是代码，并自动加上 .AX
+    raw_tickers = df_input.iloc[:, 0].tolist()
+    asx_pool = [str(t).strip().split('.')[0] + ".AX" for t in raw_tickers]
+    st.sidebar.success(f"成功加载 {len(asx_pool)} 只股票")
+else:
+    # 默认显示的备用小池子
+    asx_pool = ["CBA.AX", "BHP.AX", "CSL.AX", "TLS.AX"]
+    st.sidebar.warning("等待上传 CSV，当前使用默认演示列表")
+
 
 # --- 第二步：扫描参数设置 ---
 st.sidebar.header("过滤参数")
